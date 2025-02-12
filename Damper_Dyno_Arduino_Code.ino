@@ -1,8 +1,3 @@
-// const int linearPotPin = A1;             // Analog pin connected to potentiometer
-// const int NUM_SAMPLES = 300;        // Number of samples for averaging
-// const float referenceVoltage = 5.0; // Reference voltage (5V for most Arduinos)
-
-
 #define MIN_VOLTAGE 0.0
 #define MAX_VOLTAGE 5.0
 #define MAX_TRAVEL 250             // Maximum travel in millimeters
