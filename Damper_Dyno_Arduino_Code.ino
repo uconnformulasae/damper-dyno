@@ -1,132 +1,218 @@
-#define MIN_VOLTAGE 0.0
-#define MAX_VOLTAGE 5.0
-#define MAX_TRAVEL 250             // Maximum travel in millimeters
-#define MASS 5
-#define LINEAR_POT_PIN A1
-#define ROTARY_POT_PIN A0
-#define LOAD_CELL_POT_PIN A2
-#define REFERENCE_VOLTAGE 5
-#define NUM_SAMPLES 300
+#include <stdint.h>
+#include <Wire.h>
 
+constexpr float MIN_VOLTAGE = 0.0;
+constexpr float MAX_VOLTAGE = 5.0;
+constexpr int MAX_TRAVEL_MM = 250;
+constexpr float MAX_INT16_T_POSITIVE = 32767.0;
+constexpr float MAX_INT16_T_NEGATIVE = 32768.0;
 
-int adcValues[NUM_SAMPLES];         // Array to store the last 300 ADC readings
-int currentIndex = 0;              // Index to track the current sample in the array
-bool arrayFilled = false; 
+constexpr float ADS1115_6V = 6.144;
+constexpr float ADS1115_250MV = 0.256;
+constexpr int NUM_SAMPLES = 16; // do not change, because division logic will have to be edited
 
-unsigned long lastTime = 0;         // Time of the last sample
-unsigned long currentTime = 0;      // Current time
+constexpr float LOAD_CELL_MV_V = 3.2;
+constexpr float MAX_LOAD_CELL_WEIGHT = 500.0;
+
+constexpr int DELAY_MS = 250;
+constexpr unsigned long BAUD_RATE = 115200;
 
 void setup() {
-  Serial.begin(9600);              // Initialize serial communication at 9600 baud
-  Serial.println("ADC Voltage, Displacement, Velocity, and Dynamic Force Logger");
+  Wire.begin();
+  Serial.begin(115200);
+  while (!Serial) {
+    delay(10);
+  }
+
+  Serial.println(F("ADC Voltage, Displacement, Velocity, and Dynamic Force Logger"));
 }
 
 void loop() {
   // Read the raw ADC value
-  int lprv = analogRead(LINEAR_POT_PIN);    //linear potentiometer raw value
-  int rprv = analogRead(ROTARY_POT_PIN);    //rotary potentiometer raw value
-  int lcrv = analogRead(LOAD_CELL_POT_PIN);  //load cell raw value
+  float linear_pot_voltage = read_linear_pot();
+  float rotary_pot_voltage = read_rotary_pot();
+  float load_cell_voltage = read_load_cell();
 
-  // Store the current ADC value in the array
-  adcValues[currentIndex] = lprv;
-
-  // Increment the index and wrap around if necessary
-  currentIndex = (currentIndex + 1) % NUM_SAMPLES;
-
-  // Set the array filled flag to true once we've wrapped around
-  if (currentIndex == 0) {
-    arrayFilled = true;
-  }
-
-  // Calculate the average ADC value
-  int averageValue = calculateAverage();
-
-  // Convert values
-  float lpv = convertToVoltage(lprv);    //linear potentiometer voltage
-  float rpv = convertToVoltage(rprv);    //rotary potentiometer voltage
-  float lcv = convertToVoltage(lcrv);
-  float displacement = convertToDisplacement(lprv, MIN_VOLTAGE, MAX_VOLTAGE, MAX_TRAVEL);
+  float displacement = convert_to_displacement(linear_pot_voltage);
 
   // Calculate velocity in mm/s
-  float velocity = calculateVelocity();
+  float velocity = calculate_linear_pot_velocity();
 
   // Calculate dynamic force based on real-time displacement
 
   // Output results
-  Serial.print("Linear_Pot_Voltage: ");
-  Serial.print(lpv, 2);
-  Serial.print(",   Displacement_mm: ");
+  Serial.print(F("Linear_Pot_Voltage:"));
+  Serial.print(linear_pot_voltage, 2);
+  Serial.print(F(",   Displacement_mm:"));
   Serial.print(displacement, 2);
-  Serial.print(",   Velocity_mm/s: ");
+  Serial.print(F(",   Velocity_mm/s:"));
   Serial.print(velocity, 2);
-  Serial.print(",    Rotary_Pot_Voltage: ");
-  Serial.print(rpv, 2);
-  Serial.print(",   Load_Cell_Voltage: ");
-  Serial.println(lcv , 2);
+  Serial.print(F(",    Rotary_Pot_Voltage:"));
+  Serial.print(rotary_pot_voltage, 4);
+  Serial.print(F(",  Load Cell Voltage:"));
+  Serial.print(load_cell_voltage,6);
+  Serial.print(F(",  Load Cell Weight:"));
+  Serial.println(convert_to_weight(load_cell_voltage), 2);
 
   // Delay for the next reading
-  delay(100);
+  delay(DELAY_MS);
 }
 
-int calculateAverage() {
-  long sum = 0;
-  int count = arrayFilled ? NUM_SAMPLES : currentIndex;
+// ADS1115 address (default - ADDR connected to GND)
+// refer to datasheet for explanation.
+constexpr uint8_t ADS1115_ADDRESS = 0b01001000;
 
-  // Sum all stored values
-  for (int i = 0; i < count; i++) {
-    sum += adcValues[i];
+// ADS1115 config, very specific to this project.
+// Refer to datasheet for explanation.
+constexpr uint16_t ADS1115_CONFIG = 0b0000111011100011;
+
+// ADS1115 registers
+constexpr uint8_t CONVERSION_REGISTER = 0b00000000;
+constexpr uint8_t CONFIG_REGISTER = 0b00000001;
+
+
+float last_linear_pot_voltage = 0.0;
+float current_linear_pot_voltage = 0.0;
+
+unsigned long last_linear_pot_readout_time = 0;
+unsigned long current_linear_pot_readout_time = 0;
+
+// reads from the specified ADS1115 register
+int16_t read_ADS1115(uint8_t reg) {
+  Wire.beginTransmission(ADS1115_ADDRESS);
+  Wire.write(reg);
+  Wire.endTransmission();
+  
+  Wire.requestFrom(ADS1115_ADDRESS, (uint8_t) 2);
+
+  int16_t result = 0;
+  if (Wire.available() >= 2) {
+    result = Wire.read() << 8;
+    result |= Wire.read();
   }
-
-  // Return the average value as an integer
-  return sum / count;
+  return result;
 }
 
-float calculateVelocity() {
-  if (currentIndex < 2 && !arrayFilled) {
-    return 0.0;  // Not enough data to calculate velocity
+// writes the value to the specified ADS1115 register, one byte at a time
+void write_ADS1115(uint8_t reg, uint16_t value) {
+  Wire.beginTransmission(ADS1115_ADDRESS);
+  Wire.write(reg);
+  Wire.write((value >> 8) & 0xFF);
+  Wire.write(value & 0XFF);
+  Wire.endTransmission();
+}
+
+// reads the load cell voltage from the ADS1115
+float read_load_cell() {
+  // mask with 0s where the value should be and 1s everywhere else
+  // refer to datasheet for explanation
+  constexpr uint16_t mask     = ~(0b0111111000000000);
+  constexpr uint16_t new_bits =   0b0000111000000000;
+
+  // set and write the config
+  uint16_t config = (ADS1115_CONFIG & mask) | new_bits;
+  write_ADS1115(CONFIG_REGISTER, config);
+
+  // give the chip time to settle and take a new reading
+  wait_for_conversion();
+
+  int16_t readouts[NUM_SAMPLES];
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    readouts[NUM_SAMPLES] = read_ADS1115(CONVERSION_REGISTER);
   }
+  int16_t readout = take_ADS1115_samples();
+  return convert_to_voltage(readout, ADS1115_250MV);
+}
 
-  // Get the two most recent ADC values
-  int lastIndex = (currentIndex - 1 + NUM_SAMPLES) % NUM_SAMPLES;
-  int prevIndex = (currentIndex - 2 + NUM_SAMPLES) % NUM_SAMPLES;
+// reads the linear pot voltage from the ADS1115
+float read_linear_pot() {
+  constexpr uint16_t mask     = ~(0b0111111000000000);
+  constexpr uint16_t new_bits =   0b0110000000000000;
 
-  // Convert ADC values to displacement
-  float y2 = convertToDisplacement(adcValues[lastIndex], MIN_VOLTAGE, MAX_VOLTAGE, MAX_TRAVEL);
-  float y1 = convertToDisplacement(adcValues[prevIndex], MIN_VOLTAGE, MAX_VOLTAGE, MAX_TRAVEL);
+    // set and write the config
+  uint16_t config = (ADS1115_CONFIG & mask) | new_bits;
+  write_ADS1115(CONFIG_REGISTER, config);
 
-  // Get time difference between the two readings
-  currentTime = millis();
-  unsigned long deltaTime = currentTime - lastTime;  // Time difference in milliseconds
-  lastTime = currentTime;
+  // give the chip time to settle and take a new reading
+  wait_for_conversion();
 
-  if (deltaTime == 0) {
-    return 0.0;  // Avoid division by zero
+  int16_t readout = take_ADS1115_samples();
+  current_linear_pot_readout_time = millis();
+  current_linear_pot_voltage = convert_to_voltage(readout, ADS1115_6V);
+  return current_linear_pot_voltage;
+}
+
+// reads the rotary pot voltage from the ADS1115
+float read_rotary_pot() {
+  constexpr uint16_t mask     = ~(0b0111111000000000);
+  constexpr uint16_t new_bits =   0b0111000000000000;
+
+    // set and write the config
+  uint16_t config = (ADS1115_CONFIG & mask) | new_bits;
+  write_ADS1115(CONFIG_REGISTER, config);
+
+  // give the chip time to settle and take a new reading
+  wait_for_conversion();
+
+  int16_t readout = take_ADS1115_samples();
+  return convert_to_voltage(readout, ADS1115_6V);
+}
+
+// waits for the ADS1115 to set the correct bit in the config register
+void wait_for_conversion() {
+  delay(5);
+}
+
+int16_t take_ADS1115_samples() {
+    return read_ADS1115(CONVERSION_REGISTER);
+}
+
+// Convert the ADC value to a voltage (0V to referenceVoltage) 
+float convert_to_voltage(int16_t adc_value, float reference_voltage) {
+  if (adc_value >= 0) {
+    return (adc_value / MAX_INT16_T_POSITIVE) * reference_voltage;
+  } else {
+    return (adc_value / MAX_INT16_T_NEGATIVE) * reference_voltage;
   }
-
-  // Calculate velocity (change in displacement over time)
-  float velocity = (y2 - y1) / (deltaTime / 1000.0);  // Velocity in mm/s
-  return velocity;
 }
 
 
-float convertToVoltage(int adcValue) {
-  // Convert the ADC value to a voltage (0V to referenceVoltage)
-  return (adcValue / 1023.0) * REFERENCE_VOLTAGE;
+float calculate_linear_pot_velocity() {
+    // Ensure we have valid timestamps to avoid division by zero
+    if (current_linear_pot_readout_time == last_linear_pot_readout_time) {
+        return 0.0;  // No time difference, can't calculate velocity
+    }
+
+    // Convert voltage to displacement
+    float y2 = convert_to_displacement(current_linear_pot_voltage);
+    float y1 = convert_to_displacement(last_linear_pot_voltage);
+
+    // Calculate time difference in seconds
+    float deltaTime = (current_linear_pot_readout_time - last_linear_pot_readout_time) / 1000.0;
+
+    // Calculate velocity: change in displacement over time
+    float velocity = (y2 - y1) / deltaTime;  // Velocity in mm/s
+
+    last_linear_pot_readout_time = current_linear_pot_readout_time;
+    last_linear_pot_voltage = current_linear_pot_voltage;
+
+    return velocity;
 }
 
-float convertToDisplacement(int adcValue, float minVoltage, float maxVoltage, float maxTravel) {
-  float voltage = convertToVoltage(adcValue);
 
+float convert_to_displacement(float voltage) {
   // Clamp the voltage to the valid range
-  if (voltage < minVoltage) {
-    voltage = minVoltage;
-  } else if (voltage > maxVoltage) {
-    voltage = maxVoltage;
+  if (voltage < MIN_VOLTAGE) {
+    voltage = MIN_VOLTAGE;
+  } else if (voltage > MAX_VOLTAGE) {
+    voltage = MAX_VOLTAGE;
   }
 
-  // Calculate the position percentage
-  float positionPercentage = (voltage - minVoltage) / (maxVoltage - minVoltage);
+  return ((voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE)) * MAX_TRAVEL_MM;
+}
 
-  // Convert the percentage to a displacement value (in mm)
-  return positionPercentage * maxTravel;
+float convert_to_weight(float voltage) {
+  constexpr float max_meter_voltage = (LOAD_CELL_MV_V * MAX_VOLTAGE) / 1000.0;
+
+  return (voltage / max_meter_voltage) * MAX_LOAD_CELL_WEIGHT;
 }
