@@ -1,0 +1,15 @@
+../Core/Src/main.c:105:5:main	240	static
+../Core/Src/main.c:175:6:SystemClock_Config	160	static
+../Core/Src/main.c:220:13:MX_I2C1_Init	8	static
+../Core/Src/main.c:268:13:MX_USART2_UART_Init	8	static
+../Core/Src/main.c:303:13:MX_GPIO_Init	16	static
+../Core/Src/main.c:319:9:read_ADS1115	32	static
+../Core/Src/main.c:338:6:write_ADS1115	32	static
+../Core/Src/main.c:348:7:convert_to_voltage	16	static
+../Core/Src/main.c:357:7:convert_to_displacement	16	static
+../Core/Src/main.c:367:7:convert_to_weight	24	static
+../Core/Src/main.c:374:7:calculate_linear_pot_velocity	24	static
+../Core/Src/main.c:388:7:read_load_cell	16	static
+../Core/Src/main.c:400:7:read_linear_pot	16	static
+../Core/Src/main.c:414:7:read_rotary_pot	16	static
+../Core/Src/main.c:430:6:Error_Handler	4	static,ignoring_inline_asm
